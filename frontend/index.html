@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Agent for Maintenance Ticket Prioritization</title>
+  <style>
+    :root { color-scheme: light; --green:#12372a; --bg:#f5f7f8; --line:#dce4e1; --muted:#63716c; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Inter,Arial,sans-serif; background:var(--bg); color:#17211d; }
+    header { background:var(--green); color:white; padding:30px max(20px,calc((100% - 1000px)/2)); }
+    header p { color:#d5e6dc; margin-bottom:0; }
+    main { max-width:1000px; margin:28px auto; padding:0 18px 40px; }
+    .layout { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    .card { background:white; border:1px solid var(--line); border-radius:16px; padding:22px; box-shadow:0 5px 18px #14231a08; }
+    h1 { margin:0 0 8px; font-size:clamp(24px,4vw,34px); }
+    h2 { font-size:19px; margin:0 0 15px; }
+    label { display:block; font-weight:600; margin:14px 0 7px; }
+    textarea,select { width:100%; border:1px solid #cbd5d0; border-radius:9px; padding:12px; font:inherit; background:white; }
+    textarea { min-height:150px; resize:vertical; }
+    button { border:0; border-radius:9px; background:var(--green); color:white; padding:12px 16px; font-weight:700; cursor:pointer; }
+    button.secondary { background:#e8efeb; color:var(--green); }
+    button:disabled { opacity:.6; cursor:wait; }
+    .actions { display:flex; gap:9px; flex-wrap:wrap; margin-top:14px; }
+    .muted { color:var(--muted); font-size:13px; line-height:1.5; }
+    .status { margin-top:12px; font-size:14px; color:var(--muted); }
+    .result-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .result { border:1px solid var(--line); border-radius:10px; padding:12px; min-width:0; }
+    .result small { color:var(--muted); display:block; margin-bottom:6px; }
+    .result strong { overflow-wrap:anywhere; }
+    .wide { grid-column:1/-1; }
+    .pill { display:inline-block; border-radius:999px; padding:4px 9px; background:#edf2ef; font-size:12px; font-weight:700; text-transform:uppercase; }
+    .critical { background:#fee2e2; color:#991b1b; } .high { background:#ffedd5; color:#9a3412; }
+    .medium { background:#fef3c7; color:#92400e; } .low { background:#dcfce7; color:#166534; }
+    pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#f7f9f8; border-radius:9px; padding:12px; font-size:12px; max-height:230px; overflow:auto; }
+    footer { text-align:center; color:var(--muted); font-size:12px; padding:12px; }
+    @media(max-width:760px){ .layout{grid-template-columns:1fr;} }
+  </style>
+</head>
+<body>
+<header>
+  <h1>AI Agent for Maintenance Ticket Prioritization</h1>
+  <p>Classify, prioritize, and route renewable-energy maintenance tickets.</p>
+</header>
+<main>
+  <div class="layout">
+    <section class="card">
+      <h2>Analyze a maintenance ticket</h2>
+      <p class="muted">Enter a description or load one of the six bundled examples.</p>
+      <label for="sample">Bundled example</label>
+      <select id="sample"><option value="">Choose a sample ticket (optional)</option></select>
+      <label for="asset">Asset type (optional)</label>
+      <select id="asset">
+        <option value="">Infer from description</option><option>solar</option><option>wind</option><option>hydro</option><option>grid</option>
+      </select>
+      <label for="description">Ticket description</label>
+      <textarea id="description" placeholder="Example: Gearbox vibration has increased with abnormal noise..."></textarea>
+      <div class="actions">
+        <button id="run">Analyze ticket</button>
+        <button id="clear" class="secondary" type="button">Clear</button>
+      </div>
+      <div id="status" class="status" role="status">Connecting to API…</div>
+    </section>
+    <section class="card">
+      <h2>Triage result</h2>
+      <div id="empty" class="muted">Your analysis will appear here after you submit a ticket.</div>
+      <div id="results" hidden>
+        <div class="result-grid">
+          <div class="result"><small>Category</small><strong id="category"></strong></div>
+          <div class="result"><small>Severity</small><span id="severity" class="pill"></span></div>
+          <div class="result"><small>Severity score</small><strong id="score"></strong></div>
+          <div class="result"><small>Assigned team</small><strong id="team"></strong></div>
+          <div class="result wide"><small>Probable root cause</small><span id="cause"></span></div>
+          <div class="result wide"><small>Recommended next action</small><span id="action"></span></div>
+          <div class="result wide"><small>Method and evidence</small><span id="evidence"></span></div>
+          <div class="result wide"><small>Human review</small><span id="review"></span></div>
+          <div class="result wide"><small>Limitations</small><ul id="limits"></ul></div>
+        </div>
+        <details style="margin-top:12px"><summary>Raw API response</summary><pre id="raw"></pre></details>
+      </div>
+    </section>
+  </div>
+  <section class="card" style="margin-top:18px">
+    <h2>Evaluation snapshot</h2>
+    <p class="muted">Checks the triage pipeline against the six bundled tickets. This is an in-sample smoke test, not a held-out accuracy estimate.</p>
+    <button id="evaluate" class="secondary">Run evaluation</button>
+    <pre id="evaluation">Evaluation has not been run.</pre>
+  </section>
+</main>
+<footer>Demo only. Root causes and recommended actions require qualified human verification.</footer>
+<script>
+const $ = id => document.getElementById(id);
+async function api(path, options={}) {
+  const response = await fetch(path, {headers:{"Content-Type":"application/json"}, ...options});
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.detail || `Request failed (${response.status})`);
+  return body;
+}
+async function init() {
+  try {
+    const [demo, ticketData] = await Promise.all([api("/api/demo"), api("/api/tickets")]);
+    $("status").textContent = `Backend connected · ${demo.dataset_rows} sample tickets loaded`;
+    ticketData.tickets.forEach(t => {
+      const option = document.createElement("option");
+      option.value = t.ticket_id;
+      option.textContent = `${t.ticket_id} · ${t.asset_type} · ${t.target_category}`;
+      option.dataset.description = t.description;
+      option.dataset.asset = t.asset_type;
+      $("sample").appendChild(option);
+    });
+  } catch (err) {
+    $("status").textContent = `Backend connection error: ${err.message}`;
+  }
+}
+$("sample").addEventListener("change", () => {
+  const option = $("sample").selectedOptions[0];
+  if (option && option.dataset.description) {
+    $("description").value = option.dataset.description;
+    $("asset").value = option.dataset.asset || "";
+  }
+});
+$("run").addEventListener("click", async () => {
+  const text = $("description").value.trim();
+  if (text.length < 3) { $("status").textContent = "Enter a ticket description of at least 3 characters."; return; }
+  $("run").disabled = true; $("status").textContent = "Analyzing ticket…";
+  try {
+    const data = await api("/api/run", {method:"POST", body:JSON.stringify({text, asset_type:$("asset").value || null})});
+    $("empty").hidden = true; $("results").hidden = false;
+    $("category").textContent = data.category;
+    $("severity").textContent = data.severity;
+    $("severity").className = `pill ${data.severity}`;
+    $("score").textContent = `${data.severity_score}/100`;
+    $("team").textContent = data.assigned_team;
+    $("cause").textContent = data.probable_root_cause;
+    $("action").textContent = data.recommended_next_action;
+    $("evidence").textContent = `${data.method} · ${(data.evidence || []).join(", ") || "No matching phrase"}`;
+    $("review").textContent = data.requires_human_review ? "Required / recommended" : "Review according to site procedure";
+    $("limits").replaceChildren(...data.limitations.map(item => { const li=document.createElement("li"); li.textContent=item; return li; }));
+    $("raw").textContent = JSON.stringify(data, null, 2);
+    $("status").textContent = "Analysis complete. Verify recommendations before acting.";
+  } catch (err) { $("status").textContent = `Error: ${err.message}`; }
+  finally { $("run").disabled = false; }
+});
+$("clear").addEventListener("click", () => {
+  $("description").value=""; $("asset").value=""; $("sample").value="";
+  $("results").hidden=true; $("empty").hidden=false; $("status").textContent="Ready.";
+});
+$("evaluate").addEventListener("click", async () => {
+  $("evaluation").textContent = "Evaluating…";
+  try { $("evaluation").textContent = JSON.stringify(await api("/api/evaluate"), null, 2); }
+  catch(err) { $("evaluation").textContent = `Error: ${err.message}`; }
+});
+init();
+</script>
+</body>
+</html>
